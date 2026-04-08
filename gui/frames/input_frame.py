@@ -45,10 +45,23 @@ class InputFrame(ctk.CTkFrame):
             row=row, column=0, padx=(15, 8), pady=5, sticky="w")
         self.mode_var = ctk.StringVar(value="Excel BOM")
         self.mode_selector = ctk.CTkSegmentedButton(
-            self, values=["Excel BOM", "Altium BOM", "CSV Part List"],
+            self, values=["Excel BOM", "Altium BOM", "Part Number List"],
             variable=self.mode_var, command=self._on_mode_change,
             font=("Arial", 12))
         self.mode_selector.grid(row=row, column=1, columnspan=2, padx=(0, 15), pady=5, sticky="ew")
+
+        row += 1
+
+        # Distributor
+        ctk.CTkLabel(self, text="Distributor:", font=("Arial", 13, "bold")).grid(
+            row=row, column=0, padx=(15, 8), pady=5, sticky="w")
+        self.distributor_var = ctk.StringVar(value="DigiKey")
+        self.distributor_selector = ctk.CTkOptionMenu(
+            self, values=["DigiKey", "Mouser", "Newark",
+                          "DigiKey 1st", "Mouser 1st", "Newark 1st"],
+            variable=self.distributor_var,
+            font=("Arial", 12), height=32, width=200)
+        self.distributor_selector.grid(row=row, column=1, columnspan=2, padx=(0, 15), pady=5, sticky="ew")
 
         row += 1
 
@@ -88,8 +101,8 @@ class InputFrame(ctk.CTkFrame):
             filetypes = [("Excel files", "*.xlsx"), ("All files", "*.*")]
         elif mode == "Altium BOM":
             filetypes = [("CSV files", "*.csv"), ("Excel files", "*.xlsx"), ("All files", "*.*")]
-        else:  # CSV Part List
-            filetypes = [("CSV files", "*.csv"), ("All files", "*.*")]
+        else:  # Part Number List
+            filetypes = [("CSV files", "*.csv"), ("Excel files", "*.xlsx"), ("All files", "*.*")]
 
         path = filedialog.askopenfilename(filetypes=filetypes)
         if path:
@@ -106,4 +119,5 @@ class InputFrame(ctk.CTkFrame):
             'mode': self.mode_var.get(),
             'file_path': self.file_var.get().strip(),
             'num_boards': num_boards,
+            'distributor': self.distributor_var.get(),
         }

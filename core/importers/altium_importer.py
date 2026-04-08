@@ -23,16 +23,24 @@ COLUMN_MAP = {
 
 
 def parse(file_path: str) -> list:
-    """Parse an Altium BOM CSV into a list of part dicts for bom_builder."""
+    """Parse an Altium BOM (CSV or Excel) into a list of part dicts for bom_builder."""
     ext = os.path.splitext(file_path)[1].lower()
-    if ext != '.csv':
-        raise ValueError(f"Expected .csv file, got {ext}")
 
     parts = []
 
-    with open(file_path, 'r', encoding='utf-8-sig') as f:
-        reader = csv.reader(f)
-        rows = list(reader)
+    if ext in ('.xlsx', '.xls'):
+        import openpyxl
+        wb = openpyxl.load_workbook(file_path)
+        ws = wb.active
+        rows = []
+        for row in ws.iter_rows(values_only=True):
+            rows.append([str(cell) if cell is not None else '' for cell in row])
+    elif ext == '.csv':
+        with open(file_path, 'r', encoding='utf-8-sig') as f:
+            reader = csv.reader(f)
+            rows = list(reader)
+    else:
+        raise ValueError(f"Unsupported file type: {ext}. Use .csv or .xlsx")
 
     if not rows:
         return parts

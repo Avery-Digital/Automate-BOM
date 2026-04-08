@@ -3,19 +3,29 @@ import os
 
 
 def parse(file_path: str) -> list:
-    """Parse a simple CSV of manufacturer part numbers.
+    """Parse a simple list of manufacturer part numbers (CSV or Excel).
     Handles single-column (just part numbers) or multi-column with headers.
     Returns list of part dicts for bom_builder.
     """
     ext = os.path.splitext(file_path)[1].lower()
-    if ext != '.csv':
-        raise ValueError(f"Expected .csv file, got {ext}")
 
     parts = []
 
-    with open(file_path, 'r', encoding='utf-8-sig') as f:
-        reader = csv.reader(f)
-        rows = [r for r in reader if r and any(cell.strip() for cell in r)]
+    if ext in ('.xlsx', '.xls'):
+        import openpyxl
+        wb = openpyxl.load_workbook(file_path)
+        ws = wb.active
+        rows = []
+        for row in ws.iter_rows(values_only=True):
+            str_row = [str(cell) if cell is not None else '' for cell in row]
+            if any(cell.strip() for cell in str_row):
+                rows.append(str_row)
+    elif ext == '.csv':
+        with open(file_path, 'r', encoding='utf-8-sig') as f:
+            reader = csv.reader(f)
+            rows = [r for r in reader if r and any(cell.strip() for cell in r)]
+    else:
+        raise ValueError(f"Unsupported file type: {ext}. Use .csv or .xlsx")
 
     if not rows:
         return parts

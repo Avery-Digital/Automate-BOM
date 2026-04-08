@@ -7,17 +7,34 @@ import time
 import os
 
 from core.digikey_api import DigiKeyAPI
+from core.mouser_api import MouserAPI
+from core.newark_api import NewarkAPI
+
+# Priority order for each distributor mode
+DISTRIBUTOR_PRIORITY = {
+    'DigiKey': ['DigiKey'],
+    'Mouser': ['Mouser'],
+    'Newark': ['Newark'],
+    'DigiKey 1st': ['DigiKey', 'Mouser', 'Newark'],
+    'Mouser 1st': ['Mouser', 'DigiKey', 'Newark'],
+    'Newark 1st': ['Newark', 'Mouser', 'DigiKey'],
+}
 
 
 class BOMPopulator:
     """Main BOM population class with callback support for GUI."""
 
-    def __init__(self, client_id: str, client_secret: str,
+    def __init__(self, client_id: str = '', client_secret: str = '',
+                 mouser_api_key: str = '', newark_api_key: str = '',
+                 distributor: str = 'DigiKey',
                  log_callback: Callable[[str], None] = None,
                  progress_callback: Callable[[int, int, str, str], None] = None):
         self._log = log_callback or print
         self._progress = progress_callback
-        self.dk = DigiKeyAPI(client_id, client_secret, log_callback=self._log)
+        self.distributor = distributor
+        self.dk = DigiKeyAPI(client_id, client_secret, log_callback=self._log) if client_id else None
+        self.mouser = MouserAPI(mouser_api_key, log_callback=self._log) if mouser_api_key else None
+        self.newark = NewarkAPI(newark_api_key, log_callback=self._log) if newark_api_key else None
         self.log_file = None
         self._cancel_event = threading.Event()
 
@@ -91,10 +108,27 @@ class BOMPopulator:
             if cell.value:
                 cell.border = thin_border_h
 
-        # Authenticate
-        self.log("\nAuthenticating with DigiKey...")
-        if not self.dk.authenticate():
-            self.log("Authentication failed")
+        # Determine which distributors to use based on priority
+        priority = DISTRIBUTOR_PRIORITY.get(self.distributor, ['DigiKey'])
+        active_distributors = []
+
+        for dist in priority:
+            if dist == 'DigiKey' and self.dk:
+                self.log(f"\nAuthenticating with DigiKey...")
+                if self.dk.authenticate():
+                    self.log("DigiKey authentication successful")
+                    active_distributors.append('DigiKey')
+                else:
+                    self.log("DigiKey authentication failed")
+            elif dist == 'Mouser' and self.mouser:
+                self.log("Mouser API ready")
+                active_distributors.append('Mouser')
+            elif dist == 'Newark' and self.newark:
+                self.log("Newark API ready")
+                active_distributors.append('Newark')
+
+        if not active_distributors:
+            self.log("No distributor API available")
             return {'processed': 0, 'success': 0, 'failed': 0, 'skipped': 0, 'failed_parts': []}
         self.log("Authentication successful")
 
@@ -116,6 +150,8 @@ class BOMPopulator:
         }
 
         green_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+        blue_fill = PatternFill(start_color="BDD7EE", end_color="BDD7EE", fill_type="solid")
+        purple_fill = PatternFill(start_color="D9C4EC", end_color="D9C4EC", fill_type="solid")
         red_fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
         arial_font = Font(name='Arial', size=10, color='000000')
         center = Alignment(horizontal='center', vertical='center')
@@ -139,83 +175,113 @@ class BOMPopulator:
                 stats['skipped'] += 1
                 continue
 
+            # Check for DNI in notes column - highlight red and skip lookup
+            if 'notes' in column_map:
+                notes_val = str(sheet.cell(row=row_idx, column=column_map['notes']).value or '').strip()
+                if notes_val.upper().startswith('DNI'):
+                    for col in range(1, sheet.max_column + 1):
+                        cell = sheet.cell(row=row_idx, column=col)
+                        cell.fill = red_fill
+                        cell.font = arial_font
+                        cell.alignment = center
+                        cell.border = thin_border
+                    stats['skipped'] += 1
+                    self.log(f"\n  Skipping DNI part: {mfr_pn}")
+                    continue
+
             stats['processed'] += 1
             self.log(f"\n[{stats['processed']}/{total_parts}] Part: {mfr_pn}")
 
             if self._progress:
                 self._progress(stats['processed'], total_parts, mfr_pn, 'searching')
 
-            # Search DigiKey
-            result = self.dk.search_part(mfr_pn)
+            # Search distributor(s) in priority order
+            data = None
+            for dist in active_distributors:
+                if dist == 'DigiKey':
+                    result = self._search_digikey(mfr_pn, delay_between_requests)
+                elif dist == 'Mouser':
+                    result = self._search_mouser(mfr_pn)
+                    time.sleep(delay_between_requests)
+                elif dist == 'Newark':
+                    result = self._search_newark(mfr_pn)
+                    time.sleep(delay_between_requests)
+                else:
+                    continue
 
-            if result and result.get('Products'):
-                products = result['Products']
-                product = None
-
-                # Exact match first
-                for p in products:
-                    mpn = p.get('ManufacturerProductNumber', '')
-                    if mpn.upper() == mfr_pn.upper():
-                        product = p
-                        self.log(f"  Found exact match: {mpn}")
+                if result:
+                    if not data:
+                        data = result
+                    # If current best has 0 available and this one has stock, switch
+                    if data.get('available', 0) == 0 and result.get('available', 0) > 0:
+                        self.log(f"  {data['distributor']} shows 0 available, using {result['distributor']}")
+                        data = result
+                    # If we found something with stock, stop searching
+                    if data.get('available', 0) > 0:
                         break
 
-                # ExactMatches array
-                if not product and result.get('ExactMatches'):
-                    for p in result['ExactMatches']:
-                        mpn = p.get('ManufacturerProductNumber', '')
-                        if mpn.upper() == mfr_pn.upper():
-                            product = p
-                            self.log(f"  Found exact match: {mpn}")
+            # Supplement missing detail fields (value, temperature, footprint)
+            # from other distributors if the primary didn't provide them
+            if data and len(active_distributors) > 1:
+                missing_fields = []
+                if not data.get('component_value'):
+                    missing_fields.append('component_value')
+                if not data.get('temperature'):
+                    missing_fields.append('temperature')
+                if not data.get('footprint'):
+                    missing_fields.append('footprint')
+
+                if missing_fields:
+                    # Search other distributors for detail data
+                    detail_sources = [d for d in active_distributors if d != data.get('distributor')]
+                    for src in detail_sources:
+                        if not missing_fields:
                             break
+                        supplement = None
+                        try:
+                            if src == 'DigiKey' and self.dk:
+                                self.log(f"  Fetching details from DigiKey...")
+                                supplement = self._search_digikey(mfr_pn, delay_between_requests, details_only=True)
+                            elif src == 'Newark' and self.newark:
+                                self.log(f"  Fetching details from Newark...")
+                                supplement = self._search_newark(mfr_pn)
+                                time.sleep(delay_between_requests)
+                        except Exception:
+                            self.log(f"  {src} detail fetch failed, trying next...")
+                            continue
 
-                # Partial match
-                if not product:
-                    for p in products:
-                        mpn = p.get('ManufacturerProductNumber', '')
-                        if mfr_pn.upper() in mpn.upper() or mpn.upper() in mfr_pn.upper():
-                            product = p
-                            self.log(f"  Found partial match: {mpn}")
-                            break
-
-                # Fallback
-                if not product:
-                    product = products[0]
-                    self.log(f"  Using first result: {product.get('ManufacturerProductNumber', 'N/A')}")
-
-                # Get pricing - use same Cut Tape > Tape & Reel > Digi-Reel hierarchy
-                digikey_pn = ''
-                product_variations = product.get('ProductVariations', [])
-                if product_variations:
-                    for preferred in ['cut tape', 'tape & reel', 'digi-reel']:
-                        for var in product_variations:
-                            pkg_type = var.get('PackageType', {})
-                            pkg_name = ''
-                            if isinstance(pkg_type, dict):
-                                pkg_name = pkg_type.get('Name', '').lower()
-                            elif isinstance(pkg_type, str):
-                                pkg_name = pkg_type.lower()
-                            if preferred in pkg_name:
-                                digikey_pn = var.get('DigiKeyProductNumber', '')
+                        if supplement:
+                            for field in list(missing_fields):
+                                if supplement.get(field):
+                                    data[field] = supplement[field]
+                                    missing_fields.remove(field)
+                            if not missing_fields:
                                 break
-                        if digikey_pn:
-                            break
-                    if not digikey_pn:
-                        digikey_pn = product_variations[0].get('DigiKeyProductNumber', '')
+                        else:
+                            self.log(f"  {src} returned no detail data, trying next...")
 
-                pricing_data = None
-                if digikey_pn:
-                    self.log(f"  Fetching pricing for {digikey_pn}...")
-                    pricing_data = self.dk.get_product_pricing(digikey_pn)
-                    time.sleep(delay_between_requests)
-
-                data = self._extract_product_data(product, pricing_data)
+            if data:
                 self._populate_row(sheet, row_idx, column_map, data,
                                    item_number=stats['processed'], num_boards=num_boards)
 
-                # Determine if 0 available -> red instead of green
+                # Determine row fill color based on which distributor found it
                 zero_available = data['available'] == 0 or data['available'] is None
-                row_fill = red_fill if zero_available else green_fill
+                used_dist = data.get('distributor', '')
+
+                # Find position of the used distributor in priority list
+                if used_dist in active_distributors:
+                    dist_rank = active_distributors.index(used_dist)
+                else:
+                    dist_rank = 0
+
+                if zero_available:
+                    row_fill = red_fill
+                elif dist_rank == 0:
+                    row_fill = green_fill   # Primary distributor
+                elif dist_rank == 1:
+                    row_fill = blue_fill    # Secondary distributor
+                else:
+                    row_fill = purple_fill  # Tertiary distributor
 
                 # Apply fill, font, alignment, borders to all cells
                 for col in range(1, sheet.max_column + 1):
@@ -253,7 +319,7 @@ class BOMPopulator:
                 if self._progress:
                     self._progress(stats['processed'], total_parts, mfr_pn, 'found')
             else:
-                # Not found - red fill with borders
+                # Not found by any distributor - red fill with borders
                 for col in range(1, sheet.max_column + 1):
                     cell = sheet.cell(row=row_idx, column=col)
                     cell.fill = red_fill
@@ -403,6 +469,193 @@ class BOMPopulator:
 
         return stats
 
+    @staticmethod
+    def _get_bulk_passive_step(description: str) -> int:
+        """Return the step size for bulk buying, or 0 if not a bulk passive.
+        Resistors: step 50, Capacitors/Ferrite beads: step 5.
+        """
+        desc = (description or '').lower()
+        # Resistors -> step 50
+        resistor_kw = ['resistor', 'res ', 'res.', 'ohm', 'thick film', 'thin film']
+        if any(kw in desc for kw in resistor_kw):
+            return 50
+        # Capacitors and ferrite beads -> step 5
+        cap_ferrite_kw = ['capacitor', 'cap ', 'cap.', 'farad', 'ceramic', 'mlcc',
+                          'ferrite', 'bead']
+        if any(kw in desc for kw in cap_ferrite_kw):
+            return 5
+        return 0
+
+    @staticmethod
+    def _calculate_qty_to_buy(qty_total: int, price_breaks: list,
+                              is_bulk: bool, max_budget: float = 25.0,
+                              max_qty: int = 1000, step: int = 50) -> tuple:
+        """Calculate optimal QTY TO BUY and the unit price at that quantity.
+        Returns (qty_to_buy, unit_price_at_qty).
+        """
+        import math
+        # Minimum: qty_total + 10%, rounded up
+        min_qty = math.ceil(qty_total * 1.1)
+        if min_qty < 1:
+            min_qty = 1
+
+        if not price_breaks or not is_bulk:
+            # Non R/C parts: just buy minimum + 10%
+            # Find the best price break for min_qty
+            best_price = price_breaks[0]['unit_price'] if price_breaks else 0
+            for pb in sorted(price_breaks, key=lambda x: x['quantity']):
+                if pb['quantity'] <= min_qty:
+                    best_price = pb['unit_price']
+            return min_qty, best_price
+
+        # R/C parts: try to buy more if it's cheap
+        # Sort price breaks by quantity ascending
+        breaks = sorted(price_breaks, key=lambda x: x['quantity'])
+
+        def get_unit_price(qty):
+            """Get the unit price for a given quantity based on price breaks."""
+            price = breaks[0]['unit_price'] if breaks else 0
+            for pb in breaks:
+                if pb['quantity'] <= qty:
+                    price = pb['unit_price']
+                else:
+                    break
+            return price
+
+        # If minimum needed already costs > budget, just buy the minimum
+        min_cost = min_qty * get_unit_price(min_qty)
+        if min_cost > max_budget:
+            return min_qty, get_unit_price(min_qty)
+
+        # If minimum needed > max_qty, just buy minimum
+        if min_qty > max_qty:
+            return min_qty, get_unit_price(min_qty)
+
+        # Try stepping up from min_qty in steps of 'step' up to max_qty
+        # Find the highest quantity where total cost <= budget
+        best_qty = min_qty
+        best_price = get_unit_price(min_qty)
+
+        # Round min_qty up to next step
+        start = max(min_qty, step)
+        if start % step != 0:
+            start = ((start // step) + 1) * step
+
+        for qty in range(start, max_qty + 1, step):
+            up = get_unit_price(qty)
+            total = qty * up
+            if total <= max_budget:
+                best_qty = qty
+                best_price = up
+            else:
+                break
+
+        # Also check max_qty exactly
+        up = get_unit_price(max_qty)
+        if max_qty * up <= max_budget:
+            best_qty = max_qty
+            best_price = up
+
+        # Make sure we're at least buying minimum
+        if best_qty < min_qty:
+            best_qty = min_qty
+            best_price = get_unit_price(min_qty)
+
+        return best_qty, best_price
+
+    @staticmethod
+    def _normalize_pn(pn: str) -> str:
+        """Normalize a part number for comparison by stripping dashes, spaces, and leading zeros."""
+        return pn.upper().replace('-', '').replace(' ', '').replace('.', '').lstrip('0')
+
+    def _search_digikey(self, mfr_pn: str, delay: float = 0.5, details_only: bool = False) -> Optional[Dict]:
+        """Search DigiKey and return extracted product data, or None.
+        If details_only=True, skip the pricing API call (faster, for supplementing data).
+        """
+        result = self.dk.search_part(mfr_pn)
+        if not result or not result.get('Products'):
+            return None
+
+        products = result['Products']
+        product = None
+        norm_search = self._normalize_pn(mfr_pn)
+
+        # Exact match first (literal)
+        for p in products:
+            mpn = p.get('ManufacturerProductNumber', '')
+            if mpn.upper() == mfr_pn.upper():
+                product = p
+                self.log(f"  [DigiKey] Exact match: {mpn}")
+                break
+
+        # Normalized match (strips dashes, leading zeros, etc.)
+        if not product:
+            for p in products:
+                mpn = p.get('ManufacturerProductNumber', '')
+                if self._normalize_pn(mpn) == norm_search:
+                    product = p
+                    self.log(f"  [DigiKey] Normalized match: {mpn}")
+                    break
+
+        # ExactMatches array
+        if not product and result.get('ExactMatches'):
+            for p in result['ExactMatches']:
+                mpn = p.get('ManufacturerProductNumber', '')
+                if mpn.upper() == mfr_pn.upper() or self._normalize_pn(mpn) == norm_search:
+                    product = p
+                    self.log(f"  [DigiKey] Exact match: {mpn}")
+                    break
+
+        # Partial match
+        if not product:
+            for p in products:
+                mpn = p.get('ManufacturerProductNumber', '')
+                if mfr_pn.upper() in mpn.upper() or mpn.upper() in mfr_pn.upper():
+                    product = p
+                    self.log(f"  [DigiKey] Partial match: {mpn}")
+                    break
+
+        # Fallback
+        if not product:
+            product = products[0]
+            self.log(f"  [DigiKey] Using first result: {product.get('ManufacturerProductNumber', 'N/A')}")
+
+        # Get pricing - Cut Tape > Tape & Reel > Digi-Reel hierarchy
+        digikey_pn = ''
+        product_variations = product.get('ProductVariations', [])
+        if product_variations:
+            for preferred in ['cut tape', 'tape & reel', 'digi-reel']:
+                for var in product_variations:
+                    pkg_type = var.get('PackageType', {})
+                    pkg_name = ''
+                    if isinstance(pkg_type, dict):
+                        pkg_name = pkg_type.get('Name', '').lower()
+                    elif isinstance(pkg_type, str):
+                        pkg_name = pkg_type.lower()
+                    if preferred in pkg_name:
+                        digikey_pn = var.get('DigiKeyProductNumber', '')
+                        break
+                if digikey_pn:
+                    break
+            if not digikey_pn:
+                digikey_pn = product_variations[0].get('DigiKeyProductNumber', '')
+
+        pricing_data = None
+        if digikey_pn and not details_only:
+            self.log(f"  Fetching pricing for {digikey_pn}...")
+            pricing_data = self.dk.get_product_pricing(digikey_pn)
+            time.sleep(delay)
+
+        return self._extract_product_data(product, pricing_data)
+
+    def _search_mouser(self, mfr_pn: str) -> Optional[Dict]:
+        """Search Mouser and return extracted product data, or None."""
+        return self.mouser.find_best_match(mfr_pn)
+
+    def _search_newark(self, mfr_pn: str) -> Optional[Dict]:
+        """Search Newark and return extracted product data, or None."""
+        return self.newark.find_best_match(mfr_pn)
+
     def _find_columns(self, sheet):
         header_row = None
         column_map = {}
@@ -428,6 +681,8 @@ class BOMPopulator:
                 column_map['manufacturer'] = col_idx
             elif "Temperature" in cell_value:
                 column_map['temperature'] = col_idx
+            elif cell_value == "Value":
+                column_map['value'] = col_idx
             elif "Description" in cell_value:
                 column_map['description'] = col_idx
             elif "Distribut" in cell_value:
@@ -495,6 +750,24 @@ class BOMPopulator:
                     footprint = fp_value
                     break
 
+        # Component value (resistance, inductance, capacitance, etc.)
+        component_value = ""
+        value_params = [
+            'resistance', 'inductance', 'capacitance', 'voltage - rated',
+            'current rating', 'frequency',
+        ]
+        for param in parameters:
+            param_text = param.get('ParameterText', '').lower()
+            # Match primary value params but skip compound ones like "DC Resistance (DCR)"
+            for vp in value_params:
+                if param_text == vp or param_text.startswith(vp):
+                    val = param.get('ValueText', '')
+                    if val and val not in ('N/A', '-'):
+                        component_value = val
+                        break
+            if component_value:
+                break
+
         # Description
         description_raw = product.get('Description', 'N/A')
         if isinstance(description_raw, dict):
@@ -544,14 +817,38 @@ class BOMPopulator:
         if isinstance(manufacturer_data, dict):
             manufacturer = manufacturer_data.get('Name', '')
 
+        # Extract price breaks from pricing data (ProductVariations -> StandardPricing)
+        price_breaks = []
+        if pricing_data:
+            pd_product = pricing_data.get('Product', {})
+            pd_variations = pd_product.get('ProductVariations', []) if pd_product else []
+            # Find the variation matching our selected digikey_pn
+            for var in pd_variations:
+                if var.get('DigiKeyProductNumber', '') == digikey_pn:
+                    for pb in var.get('StandardPricing', []):
+                        price_breaks.append({
+                            'quantity': pb.get('BreakQuantity', 0),
+                            'unit_price': pb.get('UnitPrice', 0),
+                        })
+                    break
+            # Fallback: use first variation's pricing
+            if not price_breaks and pd_variations:
+                for pb in pd_variations[0].get('StandardPricing', []):
+                    price_breaks.append({
+                        'quantity': pb.get('BreakQuantity', 0),
+                        'unit_price': pb.get('UnitPrice', 0),
+                    })
+
         return {
             'description': description,
             'dist_pn': digikey_pn,
             'product_url': product.get('ProductUrl', ''),
             'available': product.get('QuantityAvailable', 0),
             'price': unit_price,
+            'price_breaks': price_breaks,
             'temperature': temperature,
             'footprint': footprint,
+            'component_value': component_value,
             'distributor': 'DigiKey',
             'manufacturer': manufacturer
         }
@@ -664,3 +961,42 @@ class BOMPopulator:
             cell.value = data['footprint']
             cell.font = arial_font
             cell.alignment = center
+
+        # Component value (resistance, inductance, capacitance) - only if cell is empty
+        if 'value' in column_map and data.get('component_value'):
+            cell = sheet.cell(row=row_idx, column=column_map['value'])
+            if not cell.value:
+                cell.value = data['component_value']
+                cell.font = arial_font
+                cell.alignment = center
+
+        # QTY TO BUY calculation
+        if 'qty_to_buy' in column_map:
+            # Get quantity total (try reading qty_per_board * num_boards directly)
+            qty_total = 0
+            if 'qty_per_board' in column_map:
+                qpb_val = sheet.cell(row=row_idx, column=column_map['qty_per_board']).value
+                try:
+                    qty_total = int(qpb_val) * num_boards if qpb_val else 0
+                except (ValueError, TypeError):
+                    qty_total = 0
+
+            if qty_total > 0:
+                bulk_step = self._get_bulk_passive_step(data.get('description', ''))
+                is_bulk = bulk_step > 0
+                price_breaks = data.get('price_breaks', [])
+                buy_qty, buy_price = self._calculate_qty_to_buy(
+                    qty_total, price_breaks, is_bulk, step=bulk_step if is_bulk else 50)
+
+                cell = sheet.cell(row=row_idx, column=column_map['qty_to_buy'])
+                cell.value = buy_qty
+                cell.font = arial_font
+                cell.alignment = center
+
+                # Update Price Ea if we got a better price at this quantity
+                if buy_price > 0 and 'price' in column_map:
+                    cell = sheet.cell(row=row_idx, column=column_map['price'])
+                    cell.value = buy_price
+                    cell.font = arial_font
+                    cell.alignment = center
+                    cell.number_format = currency_format

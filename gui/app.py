@@ -71,12 +71,30 @@ class BOMApp(ctk.CTk):
             command=self._on_cancel)
         self.cancel_btn.pack(side="left", padx=10)
 
-        self.export_btn = ctk.CTkButton(
-            btn_frame, text="Export DigiKey Cart", width=180, height=40,
-            font=("Arial", 14, "bold"), state="disabled",
+        # Export buttons frame (row below main buttons)
+        export_frame = ctk.CTkFrame(self, fg_color="transparent")
+        export_frame.grid(row=4, column=0, padx=15, pady=(0, 10))
+
+        self.export_dk_btn = ctk.CTkButton(
+            export_frame, text="Export DigiKey Cart", width=180, height=36,
+            font=("Arial", 12, "bold"), state="disabled",
             fg_color="#2E7D32", hover_color="#388E3C",
-            command=self._on_export_cart)
-        self.export_btn.pack(side="left", padx=10)
+            command=lambda: self._on_export_cart('DigiKey'))
+        self.export_dk_btn.pack(side="left", padx=8)
+
+        self.export_mouser_btn = ctk.CTkButton(
+            export_frame, text="Export Mouser Cart", width=160, height=36,
+            font=("Arial", 12, "bold"), state="disabled",
+            fg_color="#2E7D32", hover_color="#388E3C",
+            command=lambda: self._on_export_cart('Mouser'))
+        self.export_mouser_btn.pack(side="left", padx=6)
+
+        self.export_newark_btn = ctk.CTkButton(
+            export_frame, text="Export Newark Cart", width=160, height=36,
+            font=("Arial", 12, "bold"), state="disabled",
+            fg_color="#2E7D32", hover_color="#388E3C",
+            command=lambda: self._on_export_cart('Newark'))
+        self.export_newark_btn.pack(side="left", padx=6)
 
         # Poll queue
         self._poll_queue()
@@ -120,9 +138,14 @@ class BOMApp(ctk.CTk):
             bom_name = inputs['bom_name']
             num_boards = inputs.get('num_boards', 1)
 
+            distributor = inputs.get('distributor', 'DigiKey')
+
             populator = BOMPopulator(
                 client_id=config['digikey_client_id'],
                 client_secret=config['digikey_client_secret'],
+                mouser_api_key=config.get('mouser_api_key', ''),
+                newark_api_key=config.get('newark_api_key', ''),
+                distributor=distributor,
                 log_callback=lambda msg: self._queue.put(('log', msg)),
                 progress_callback=lambda c, t, pn, s: self._queue.put(('progress', c, t, pn, s)),
             )
@@ -149,7 +172,7 @@ class BOMApp(ctk.CTk):
                     return
                 workbook = create_workbook(bom_name, parts, num_boards=num_boards)
 
-            elif mode == "CSV Part List":
+            elif mode == "Part Number List":
                 self._queue.put(('log', f"Importing CSV: {file_path}"))
                 parts = csv_importer.parse(file_path)
                 self._queue.put(('log', f"Found {len(parts)} parts in CSV"))
@@ -182,7 +205,7 @@ class BOMApp(ctk.CTk):
             self._populator.cancel()
             self.progress_frame.append_log("Cancelling...")
 
-    def _on_export_cart(self):
+    def _on_export_cart(self, target_distributor='DigiKey'):
         if not self._last_output_file:
             self.progress_frame.append_log("ERROR: No populated BOM to export from. Run the tool first.")
             return
@@ -196,8 +219,10 @@ class BOMApp(ctk.CTk):
             # Find header row and columns
             header_row = None
             dist_pn_col = None
+            distributor_col = None
             qty_to_buy_col = None
             available_col = None
+            mfr_pn_col = None
 
             for row_idx in range(1, 11):
                 for col_idx, cell in enumerate(ws[row_idx], start=1):
@@ -213,26 +238,37 @@ class BOMApp(ctk.CTk):
                     val = str(cell.value).strip() if cell.value else ""
                     if "Dist" in val and "P/N" in val:
                         dist_pn_col = col_idx
+                    elif "Distribut" in val and "P/N" not in val:
+                        distributor_col = col_idx
                     elif "QTY TO BUY" in val.upper():
                         qty_to_buy_col = col_idx
                     elif "Available" in val:
                         available_col = col_idx
                     elif "Quantity Total" in val and not qty_to_buy_col:
-                        # Fallback to Quantity Total if no QTY TO BUY
                         qty_to_buy_col = col_idx
+                    elif "Mfr" in val and "P/N" in val:
+                        mfr_pn_col = col_idx
 
             if not dist_pn_col:
-                self.progress_frame.append_log("ERROR: Could not find 'Dist. P/N' column in the output file.")
+                self.progress_frame.append_log("ERROR: Could not find 'Dist. P/N' column.")
                 return
 
-            # Collect cart items, skipping 0 available
+            # Collect cart items
             cart_items = []
+            skipped = 0
             for row_idx in range(header_row + 1, ws.max_row + 1):
-                dk_pn = ws.cell(row=row_idx, column=dist_pn_col).value
-                if not dk_pn or str(dk_pn).strip() in ('', 'NOT FOUND', 'None'):
+                pn = ws.cell(row=row_idx, column=dist_pn_col).value
+                if not pn or str(pn).strip() in ('', 'NOT FOUND', 'None'):
                     continue
 
-                # Check available - skip if 0
+                # Filter by distributor if column exists
+                if distributor_col:
+                    dist_val = str(ws.cell(row=row_idx, column=distributor_col).value or '').strip()
+                    if dist_val and dist_val != target_distributor:
+                        skipped += 1
+                        continue
+
+                # Skip 0 available
                 if available_col:
                     avail = ws.cell(row=row_idx, column=available_col).value
                     try:
@@ -253,14 +289,15 @@ class BOMApp(ctk.CTk):
                 if qty <= 0:
                     qty = 1
 
-                cart_items.append((str(dk_pn).strip(), qty))
+                cart_items.append((str(pn).strip(), qty))
 
             if not cart_items:
-                self.progress_frame.append_log("No items to export (all unavailable or missing DigiKey P/N).")
+                self.progress_frame.append_log(f"No {target_distributor} items to export.")
                 return
 
             # Save CSV
-            default_name = os.path.splitext(self._last_output_file)[0] + "_DigiKey_Cart.csv"
+            suffix = f"_{target_distributor}_Cart.csv"
+            default_name = os.path.splitext(self._last_output_file)[0] + suffix
             save_path = filedialog.asksaveasfilename(
                 defaultextension=".csv",
                 filetypes=[("CSV files", "*.csv")],
@@ -271,12 +308,21 @@ class BOMApp(ctk.CTk):
 
             with open(save_path, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
-                writer.writerow(['DigiKey Part Number', 'Quantity'])
-                for dk_pn, qty in cart_items:
-                    writer.writerow([dk_pn, qty])
+                if target_distributor == 'Mouser':
+                    writer.writerow(['Mouser Part Number', 'Quantity'])
+                elif target_distributor == 'Newark':
+                    writer.writerow(['Newark Part Number', 'Quantity'])
+                else:
+                    writer.writerow(['DigiKey Part Number', 'Quantity'])
+                for pn, qty in cart_items:
+                    writer.writerow([pn, qty])
 
-            self.progress_frame.append_log(f"Exported {len(cart_items)} items to: {save_path}")
-            self.progress_frame.append_log("Upload this CSV to DigiKey BOM Manager to fill your cart.")
+            self.progress_frame.append_log(f"Exported {len(cart_items)} {target_distributor} items to: {save_path}")
+            if skipped:
+                self.progress_frame.append_log(f"  ({skipped} items from other distributor skipped)")
+            upload_sites = {'DigiKey': 'DigiKey BOM Manager', 'Mouser': 'Mouser BOM Tool', 'Newark': 'Newark BOM Tool'}
+            upload_site = upload_sites.get(target_distributor, target_distributor)
+            self.progress_frame.append_log(f"Upload this CSV to {upload_site} to fill your cart.")
 
         except Exception as e:
             self.progress_frame.append_log(f"ERROR exporting cart: {e}")
@@ -305,7 +351,9 @@ class BOMApp(ctk.CTk):
                         self.progress_frame.set_complete(stats)
                     if output_file:
                         self._last_output_file = output_file
-                        self.export_btn.configure(state="normal")
+                        self.export_dk_btn.configure(state="normal")
+                        self.export_mouser_btn.configure(state="normal")
+                        self.export_newark_btn.configure(state="normal")
                     self.run_btn.configure(state="normal")
                     self.cancel_btn.configure(state="disabled")
                     self._populator = None
