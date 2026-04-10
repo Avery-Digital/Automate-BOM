@@ -15,6 +15,10 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+*.spec
+
+# Cart exports
+*_Cart.csv
 
 # IDE
 .vscode/

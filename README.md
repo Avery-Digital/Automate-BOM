@@ -151,5 +151,20 @@ Automate-BOM/
 ├── config.json                  # API credentials (gitignored)
 ├── BOM_Template.xlsx            # Blank BOM template
 ├── requirements.txt             # Python dependencies
+├── build.py                     # PyInstaller build script
+├── GETTING_STARTED.md           # User guide
 └── .gitignore
 ```
+
+## Building a Standalone Executable
+
+To distribute the app without requiring Python:
+
+```bash
+pip install pyinstaller
+python build.py
+```
+
+This creates `dist/BOM_Auto_Populator/` containing the standalone application. Zip and share that folder - users just extract and run `BOM_Auto_Populator.exe`.
+
+See [GETTING_STARTED.md](GETTING_STARTED.md) for the full user guide.
