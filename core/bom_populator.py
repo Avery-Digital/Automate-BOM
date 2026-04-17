@@ -9,6 +9,7 @@ import os
 from core.digikey_api import DigiKeyAPI
 from core.mouser_api import MouserAPI
 from core.newark_api import NewarkAPI
+from core.config import DEFAULT_QTY_SETTINGS
 
 # Priority order for each distributor mode
 DISTRIBUTOR_PRIORITY = {
@@ -24,14 +25,26 @@ DISTRIBUTOR_PRIORITY = {
 class BOMPopulator:
     """Main BOM population class with callback support for GUI."""
 
+    # Keyword lists for matching component categories to descriptions.
+    # Order matters: more specific categories (Ferrite Beads) must come before
+    # broader ones (Resistors) to avoid false matches on shared terms like "ohm".
+    CATEGORY_KEYWORDS = [
+        ('Ferrite Beads', ['ferrite', 'bead']),
+        ('Inductors', ['inductor', 'ind ', 'ind.', 'henry', 'choke']),
+        ('Capacitors', ['capacitor', 'cap ', 'cap.', 'farad', 'ceramic', 'mlcc']),
+        ('Resistors', ['resistor', 'res ', 'res.', 'ohm', 'thick film', 'thin film']),
+    ]
+
     def __init__(self, client_id: str = '', client_secret: str = '',
                  mouser_api_key: str = '', newark_api_key: str = '',
                  distributor: str = 'DigiKey',
+                 qty_settings: dict = None,
                  log_callback: Callable[[str], None] = None,
                  progress_callback: Callable[[int, int, str, str], None] = None):
         self._log = log_callback or print
         self._progress = progress_callback
         self.distributor = distributor
+        self.qty_settings = qty_settings or DEFAULT_QTY_SETTINGS
         self.dk = DigiKeyAPI(client_id, client_secret, log_callback=self._log) if client_id else None
         self.mouser = MouserAPI(mouser_api_key, log_callback=self._log) if mouser_api_key else None
         self.newark = NewarkAPI(newark_api_key, log_callback=self._log) if newark_api_key else None
@@ -469,33 +482,34 @@ class BOMPopulator:
 
         return stats
 
-    @staticmethod
-    def _get_bulk_passive_step(description: str) -> int:
-        """Return the step size for bulk buying, or 0 if not a bulk passive.
-        Resistors: step 50, Capacitors/Ferrite beads: step 5.
+    def _get_bulk_passive_info(self, description: str) -> dict:
+        """Return bulk buying config for a component, or None if not a bulk category.
+        Uses qty_settings from config to determine step, max_qty, and max_budget.
         """
         desc = (description or '').lower()
-        # Resistors -> step 50
-        resistor_kw = ['resistor', 'res ', 'res.', 'ohm', 'thick film', 'thin film']
-        if any(kw in desc for kw in resistor_kw):
-            return 50
-        # Capacitors and ferrite beads -> step 5
-        cap_ferrite_kw = ['capacitor', 'cap ', 'cap.', 'farad', 'ceramic', 'mlcc',
-                          'ferrite', 'bead']
-        if any(kw in desc for kw in cap_ferrite_kw):
-            return 5
-        return 0
+        categories = self.qty_settings.get('categories', DEFAULT_QTY_SETTINGS['categories'])
 
-    @staticmethod
-    def _calculate_qty_to_buy(qty_total: int, price_breaks: list,
-                              is_bulk: bool, max_budget: float = 25.0,
-                              max_qty: int = 1000, step: int = 50) -> tuple:
+        for cat_name, keywords in self.CATEGORY_KEYWORDS:
+            if any(kw in desc for kw in keywords):
+                cat_config = categories.get(cat_name, {})
+                if cat_config.get('enabled', True):
+                    return {
+                        'step': cat_config.get('step', 5),
+                        'max_qty': cat_config.get('max_qty', 1000),
+                        'max_budget': cat_config.get('max_budget', 25.0),
+                    }
+                return None  # Category exists but bulk disabled
+        return None
+
+    def _calculate_qty_to_buy(self, qty_total: int, price_breaks: list,
+                             is_bulk: bool, max_budget: float = 25.0,
+                             max_qty: int = 1000, step: int = 50) -> tuple:
         """Calculate optimal QTY TO BUY and the unit price at that quantity.
         Returns (qty_to_buy, unit_price_at_qty).
         """
         import math
-        # Minimum: qty_total + 10%, rounded up
-        min_qty = math.ceil(qty_total * 1.1)
+        overhead = self.qty_settings.get('overhead_percent', 10)
+        min_qty = math.ceil(qty_total * (1 + overhead / 100.0))
         if min_qty < 1:
             min_qty = 1
 
@@ -982,11 +996,14 @@ class BOMPopulator:
                     qty_total = 0
 
             if qty_total > 0:
-                bulk_step = self._get_bulk_passive_step(data.get('description', ''))
-                is_bulk = bulk_step > 0
+                bulk_info = self._get_bulk_passive_info(data.get('description', ''))
+                is_bulk = bulk_info is not None
                 price_breaks = data.get('price_breaks', [])
                 buy_qty, buy_price = self._calculate_qty_to_buy(
-                    qty_total, price_breaks, is_bulk, step=bulk_step if is_bulk else 50)
+                    qty_total, price_breaks, is_bulk,
+                    max_budget=bulk_info['max_budget'] if is_bulk else 25.0,
+                    max_qty=bulk_info['max_qty'] if is_bulk else 1000,
+                    step=bulk_info['step'] if is_bulk else 50)
 
                 cell = sheet.cell(row=row_idx, column=column_map['qty_to_buy'])
                 cell.value = buy_qty

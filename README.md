@@ -17,10 +17,12 @@ A desktop GUI tool that automates Bill of Materials (BOM) population by looking 
 - **Detail supplementing** - If the primary distributor (e.g., Mouser) doesn't return temperature/footprint/value data, automatically fetches it from DigiKey or Newark
 - **Smart part matching** - Normalized matching strips dashes, spaces, and leading zeros for flexible part number matching
 - **DigiKey packaging hierarchy** - Prefers Cut Tape > Tape & Reel > Digi-Reel
-- **Intelligent QTY TO BUY calculation:**
-  - All parts: minimum needed + 10%
-  - Resistors: bulk buy up to 1000 in steps of 50, max $25 budget
-  - Capacitors & Ferrite beads: bulk buy up to 1000 in steps of 5, max $25 budget
+- **Configurable QTY TO BUY calculation** with per-category settings via the QTY Settings dialog:
+  - All parts: minimum needed + configurable overhead % (default 10%)
+  - Resistors: bulk buy in configurable steps (default 50), max qty and budget limits
+  - Capacitors & Ferrite Beads: bulk buy in configurable steps (default 5), max qty and budget limits
+  - Inductors: bulk buy in configurable steps (default 5), max qty and budget limits
+  - Each category can be individually enabled/disabled with custom step size, max quantity, and max budget
   - Price Ea updated with the price break for the quantity purchased
 - **Excel output formatting:**
   - Green rows: found by primary distributor
@@ -70,12 +72,13 @@ python main.py
 
 ### First-time setup
 
-1. Click **Settings** in the GUI
+1. Click **API Settings** in the GUI
 2. Enter your API credentials:
    - **DigiKey:** Client ID and Client Secret (from [DigiKey API](https://developer.digikey.com/))
    - **Mouser:** API Key (from [Mouser API Hub](https://www.mouser.com/api-hub/))
    - **Newark:** API Key (from [element14 Partner Portal](https://partner.element14.com/))
 3. Click **Test** to verify each connection, then **Save**
+4. Optionally click **QTY Settings** to customize bulk buying rules per component category (overhead %, step sizes, max quantities, budgets)
 
 ### Running a BOM
 
@@ -136,6 +139,7 @@ Automate-BOM/
 │   └── frames/
 │       ├── input_frame.py       # Input controls
 │       ├── settings_frame.py    # API credential management
+│       ├── qty_settings_frame.py # QTY TO BUY settings dialog
 │       └── progress_frame.py    # Progress display
 ├── core/
 │   ├── digikey_api.py           # DigiKey API v4 wrapper
@@ -143,12 +147,12 @@ Automate-BOM/
 │   ├── newark_api.py            # Newark/element14 API wrapper
 │   ├── bom_populator.py         # BOM population engine
 │   ├── bom_builder.py           # Excel workbook builder
-│   ├── config.py                # Credential storage
+│   ├── config.py                # Credential and settings storage
 │   └── importers/
 │       ├── altium_importer.py   # Altium BOM parser
 │       ├── csv_importer.py      # Part number list parser
 │       └── excel_importer.py    # Excel BOM validator
-├── config.json                  # API credentials (gitignored)
+├── config.json                  # API credentials and settings (gitignored)
 ├── BOM_Template.xlsx            # Blank BOM template
 ├── requirements.txt             # Python dependencies
 ├── build.py                     # PyInstaller build script

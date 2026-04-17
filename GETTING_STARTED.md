@@ -62,10 +62,10 @@ You need at least one distributor API key. All three are free.
 
 ### Step 2: Enter Credentials in the App
 
-1. Click the **Settings** button in the top-right of the app
+1. Click the **API Settings** button in the top-right of the app
 2. Enter your API credentials for each distributor
 3. Click **Test DigiKey**, **Test Mouser**, or **Test Newark** to verify each works
-4. Click **Save** - credentials are stored locally and persist between sessions
+4. Click **Save** — credentials are stored locally and persist between sessions
 
 ---
 
@@ -89,11 +89,23 @@ You need at least one distributor API key. All three are free.
 
 The "1st" modes are recommended - they find the best availability across all distributors.
 
-### Step 3: Set Number of Boards
+### Step 3: Configure QTY Settings (Optional)
+
+Click **QTY Settings** to customize bulk buying rules:
+- **Overhead %**: Extra percentage added above the needed quantity (default 10%)
+- **Per-category settings** (Resistors, Capacitors, Ferrite Beads, Inductors):
+  - Enable/disable bulk buying for each category
+  - Step size (e.g., buy in increments of 50 for resistors)
+  - Max quantity (e.g., never buy more than 1,000)
+  - Max budget (e.g., never spend more than $25 on extras)
+
+These settings persist between sessions.
+
+### Step 4: Set Number of Boards
 
 Enter the number of boards you plan to build. Defaults to 1. This multiplies with the quantity-per-board to calculate total quantities.
 
-### Step 4: Select Input Mode and File
+### Step 5: Select Input Mode and File
 
 | Input Mode | Use When | File Type |
 |------------|----------|-----------|
@@ -103,11 +115,11 @@ Enter the number of boards you plan to build. Defaults to 1. This multiplies wit
 
 Click **Browse** to select your file.
 
-### Step 5: Run
+### Step 6: Run
 
 Click **Run**. The progress area will show real-time status for each part lookup. You can click **Cancel** at any time to stop.
 
-### Step 6: Review Output
+### Step 7: Review Output
 
 The output file is saved in the same directory as the app, named `<BOM Name>_Populated.xlsx`.
 
@@ -117,7 +129,7 @@ The output file is saved in the same directory as the app, named `<BOM Name>_Pop
 - **Light Purple**: Found by the tertiary distributor
 - **Red**: Not found, out of stock, or marked DNI (Do Not Install)
 
-### Step 7: Export Cart (Optional)
+### Step 8: Export Cart (Optional)
 
 After a successful run, three export buttons become active:
 
@@ -205,12 +217,15 @@ STM32H735IGT6, 1
 
 ### QTY TO BUY Logic
 
-The tool intelligently calculates how many parts to order:
+The tool intelligently calculates how many parts to order. All settings are configurable via the **QTY Settings** button in the GUI.
 
-- **Resistors**: Buys in steps of 50 up to 1,000 pieces, as long as the total stays under $25. This takes advantage of price breaks on cheap passives.
-- **Capacitors & Ferrite Beads**: Same logic but in steps of 5.
-- **All other parts**: Quantity Total + 10% (rounded up) as a safety margin.
-- If the minimum needed already costs more than $25, it just buys the minimum + 10%.
+- **Resistors**: Buys in steps of 50 (default) up to 1,000 pieces, as long as the total stays under $25. This takes advantage of price breaks on cheap passives.
+- **Capacitors & Ferrite Beads**: Same logic but in steps of 5 (default).
+- **Inductors**: Same logic as capacitors — steps of 5 (default), max 1,000 qty, $25 budget.
+- **All other parts**: Quantity Total + overhead % (default 10%, rounded up) as a safety margin.
+- If the minimum needed already costs more than the budget limit, it just buys the minimum + overhead %.
+
+Each category can be individually enabled/disabled, and step size, max quantity, and max budget are all configurable per category. Click **QTY Settings** to customize.
 
 The **Price Ea** column is updated to reflect the price break at the quantity being purchased.
 
@@ -242,7 +257,8 @@ Distribute this template to team members who need to create BOMs manually.
 - **Mouser 1st mode** is useful when Mouser is your preferred vendor. Missing detail data (temp, footprint) will be automatically fetched from DigiKey or Newark.
 - Use the **Part Number List** mode for quick lookups when you just have a list of part numbers.
 - The tool handles part number format variations (dashes, leading zeros) automatically.
-- Check the log output for any parts that weren't found - you may need to verify the part number.
+- Check the log output for any parts that weren't found — you may need to verify the part number.
+- Adjust **QTY Settings** to match your purchasing habits. For example, increase resistor step size to 100 if you prefer buying in larger increments, or lower the budget cap for tighter cost control.
 - DigiKey's API can be slow for certain parts (30+ seconds). This is a DigiKey server-side issue, not a tool problem.
 
 ---

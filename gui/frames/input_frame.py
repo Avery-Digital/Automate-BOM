@@ -4,9 +4,10 @@ from datetime import datetime
 
 
 class InputFrame(ctk.CTkFrame):
-    def __init__(self, master, on_settings_click=None, **kwargs):
+    def __init__(self, master, on_settings_click=None, on_qty_settings_click=None, **kwargs):
         super().__init__(master, **kwargs)
         self._on_settings = on_settings_click
+        self._on_qty_settings = on_qty_settings_click
 
         self.grid_columnconfigure(1, weight=1)
 
@@ -22,11 +23,21 @@ class InputFrame(ctk.CTkFrame):
             height=32, font=("Arial", 12))
         self.bom_name_entry.grid(row=row, column=1, padx=(0, 8), pady=(15, 5), sticky="ew")
 
-        # Settings button
+        # Settings buttons
+        settings_frame = ctk.CTkFrame(self, fg_color="transparent")
+        settings_frame.grid(row=row, column=2, padx=(0, 15), pady=(15, 5))
+
         self.settings_btn = ctk.CTkButton(
-            self, text="Settings", width=90, height=32, command=self._on_settings,
+            settings_frame, text="API Settings", width=95, height=32,
+            command=self._on_settings,
             fg_color="#555555", hover_color="#666666")
-        self.settings_btn.grid(row=row, column=2, padx=(0, 15), pady=(15, 5))
+        self.settings_btn.pack(side="left", padx=(0, 4))
+
+        self.qty_settings_btn = ctk.CTkButton(
+            settings_frame, text="QTY Settings", width=95, height=32,
+            command=self._on_qty_settings,
+            fg_color="#555555", hover_color="#666666")
+        self.qty_settings_btn.pack(side="left")
 
         row += 1
 

@@ -6,6 +6,7 @@ import openpyxl
 
 from gui.frames.input_frame import InputFrame
 from gui.frames.settings_frame import SettingsDialog
+from gui.frames.qty_settings_frame import QtySettingsDialog
 from gui.frames.progress_frame import ProgressFrame
 from core.config import load_config
 from core.bom_populator import BOMPopulator
@@ -48,7 +49,8 @@ class BOMApp(ctk.CTk):
 
         # Input frame
         self.input_frame = InputFrame(
-            self, on_settings_click=self._open_settings)
+            self, on_settings_click=self._open_settings,
+            on_qty_settings_click=self._open_qty_settings)
         self.input_frame.grid(row=1, column=0, padx=15, pady=8, sticky="ew")
 
         # Progress frame
@@ -105,6 +107,9 @@ class BOMApp(ctk.CTk):
     def _open_settings(self):
         SettingsDialog(self)
 
+    def _open_qty_settings(self):
+        QtySettingsDialog(self)
+
     def _on_run(self):
         inputs = self.input_frame.get_inputs()
 
@@ -146,6 +151,7 @@ class BOMApp(ctk.CTk):
                 mouser_api_key=config.get('mouser_api_key', ''),
                 newark_api_key=config.get('newark_api_key', ''),
                 distributor=distributor,
+                qty_settings=config.get('qty_settings'),
                 log_callback=lambda msg: self._queue.put(('log', msg)),
                 progress_callback=lambda c, t, pn, s: self._queue.put(('progress', c, t, pn, s)),
             )
