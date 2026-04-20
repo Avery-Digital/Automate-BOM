@@ -23,6 +23,9 @@ build/
 # IDE
 .vscode/
 .idea/
+.claude/
+.gitattributes
+Screenshots/
 
 # OS
 Thumbs.db
