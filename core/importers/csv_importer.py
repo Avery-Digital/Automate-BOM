@@ -1,4 +1,5 @@
 import csv
+import io
 import os
 
 
@@ -21,9 +22,14 @@ def parse(file_path: str) -> list:
             if any(cell.strip() for cell in str_row):
                 rows.append(str_row)
     elif ext == '.csv':
-        with open(file_path, 'r', encoding='utf-8-sig') as f:
-            reader = csv.reader(f)
-            rows = [r for r in reader if r and any(cell.strip() for cell in r)]
+        with open(file_path, 'rb') as f:
+            raw = f.read()
+        try:
+            text = raw.decode('utf-8-sig')
+        except UnicodeDecodeError:
+            text = raw.decode('cp1252')
+        reader = csv.reader(io.StringIO(text))
+        rows = [r for r in reader if r and any(cell.strip() for cell in r)]
     else:
         raise ValueError(f"Unsupported file type: {ext}. Use .csv or .xlsx")
 
